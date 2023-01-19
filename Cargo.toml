@@ -10,3 +10,5 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.5"
