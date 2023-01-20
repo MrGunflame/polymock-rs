@@ -46,11 +46,11 @@ impl Arena {
 
         let chunks = self.chunks.read().unwrap();
         for chunk in &*chunks {
-            if chunk.ref_count.load(Ordering::Relaxed) == 1 {
-                unsafe {
-                    chunk.reset();
-                }
-            }
+            // if chunk.ref_count.load(Ordering::Relaxed) == 1 {
+            //     unsafe {
+            //         chunk.reset();
+            //     }
+            // }
 
             if let Some(ptr) = chunk.alloc(size) {
                 return (chunk.clone(), ptr);
@@ -79,7 +79,7 @@ impl Default for Arena {
 
 #[derive(Debug)]
 pub(crate) struct ChunkRef {
-    ptr: NonNull<ChunkInner>,
+    inner: NonNull<ChunkInner>,
 }
 
 impl ChunkRef {
@@ -93,7 +93,7 @@ impl ChunkRef {
         let boxed = Box::new(ChunkInner::new(size));
         let ptr = unsafe { NonNull::new_unchecked(Box::leak(boxed) as *mut ChunkInner) };
 
-        Self { ptr }
+        Self { inner: ptr }
     }
 }
 
@@ -102,7 +102,7 @@ impl Deref for ChunkRef {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        unsafe { self.ptr.as_ref() }
+        unsafe { self.inner.as_ref() }
     }
 }
 
@@ -115,7 +115,7 @@ impl Clone for ChunkRef {
             crate::abort();
         }
 
-        Self { ptr: self.ptr }
+        Self { inner: self.inner }
     }
 }
 
@@ -131,7 +131,7 @@ impl Drop for ChunkRef {
         self.ref_count.load(Ordering::Acquire);
 
         unsafe {
-            drop(Box::from_raw(self.ptr.as_ptr()));
+            drop(Box::from_raw(self.inner.as_ptr()));
         }
     }
 }
@@ -200,31 +200,46 @@ impl Drop for ChunkInner {
 
 #[cfg(all(not(loom), test))]
 mod tests {
-    use std::sync::Arc;
+    use std::ptr::NonNull;
+    use std::sync::{mpsc, Arc};
     use std::thread;
 
     use super::ChunkRef;
     use crate::loom::sync::atomic::Ordering;
-    use crate::Arena;
+    use crate::{Arena, BytesMut};
 
     const THREADS: usize = 4;
     const ITERATIONS: usize = 100_000;
+
+    struct SendNonNull(NonNull<u8>);
+
+    unsafe impl Send for SendNonNull {}
+
+    impl From<NonNull<u8>> for SendNonNull {
+        fn from(value: NonNull<u8>) -> Self {
+            Self(value)
+        }
+    }
 
     #[test]
     fn test_chunk() {
         let chunk = ChunkRef::new(4000);
         assert_eq!(chunk.head.load(Ordering::Acquire), 0);
 
-        chunk.alloc(1000).unwrap();
+        let ptr = chunk.alloc(1000).unwrap();
+        assert_eq!(ptr.as_ptr() as usize, chunk.ptr as usize);
         assert_eq!(chunk.head.load(Ordering::Acquire), 1000);
 
-        chunk.alloc(1000).unwrap();
+        let ptr = chunk.alloc(1000).unwrap();
+        assert_eq!(ptr.as_ptr() as usize, chunk.ptr as usize + 1000);
         assert_eq!(chunk.head.load(Ordering::Acquire), 2000);
 
-        chunk.alloc(1000).unwrap();
+        let ptr = chunk.alloc(1000).unwrap();
+        assert_eq!(ptr.as_ptr() as usize, chunk.ptr as usize + 2000);
         assert_eq!(chunk.head.load(Ordering::Acquire), 3000);
 
-        chunk.alloc(1000).unwrap();
+        let ptr = chunk.alloc(1000).unwrap();
+        assert_eq!(ptr.as_ptr() as usize, chunk.ptr as usize + 3000);
         assert_eq!(chunk.head.load(Ordering::Acquire), 4000);
 
         assert!(chunk.alloc(1).is_none());
@@ -234,19 +249,48 @@ mod tests {
     fn test_chunk_threads() {
         let chunk = ChunkRef::new(1_000_000);
 
+        let (tx, rx) = mpsc::channel::<Vec<SendNonNull>>();
+
         let threads: Vec<_> = (0..THREADS)
             .map(|_| {
                 let chunk = chunk.clone();
+                let tx = tx.clone();
                 thread::spawn(move || {
+                    let mut ptrs = Vec::<SendNonNull>::with_capacity(ITERATIONS);
+
                     for _ in 0..ITERATIONS {
-                        chunk.alloc(1).unwrap();
+                        let ptr = chunk.alloc(1).unwrap();
+
+                        ptrs.push(ptr.into());
                     }
+
+                    tx.send(ptrs).unwrap();
                 })
             })
             .collect();
 
+        drop(tx);
+
         for th in threads {
             th.join().unwrap();
+        }
+
+        let mut ptrs = Vec::with_capacity(THREADS * ITERATIONS);
+
+        while let Ok(vec) = rx.recv() {
+            ptrs.extend(vec);
+        }
+
+        for (index, ptr) in ptrs.iter().enumerate() {
+            for (index2, ptr2) in ptrs.iter().enumerate() {
+                if index == index2 {
+                    continue;
+                }
+
+                if ptr.0 == ptr2.0 {
+                    panic!("[{}] [{}] duplicate pointer: {:p}", index, index2, ptr.0);
+                }
+            }
         }
 
         assert_eq!(chunk.head.load(Ordering::Relaxed), THREADS * ITERATIONS);
@@ -265,17 +309,50 @@ mod tests {
     fn test_arena_threads() {
         let arena = Arc::new(Arena::new(1_000));
 
+        let (tx, rx) = mpsc::channel::<Vec<BytesMut>>();
+
         let threads: Vec<_> = (0..THREADS)
             .map(|_| {
                 let arena = arena.clone();
+                let tx = tx.clone();
                 thread::spawn(move || {
-                    arena.zeroed(1);
+                    let mut bufs = Vec::<BytesMut>::with_capacity(ITERATIONS);
+
+                    for _ in 0..ITERATIONS {
+                        let buf = arena.zeroed(1);
+
+                        bufs.push(buf.into());
+                    }
+
+                    tx.send(bufs).unwrap();
                 })
             })
             .collect();
 
+        drop(tx);
+
         for th in threads {
             th.join().unwrap();
+        }
+
+        let mut bufs = Vec::with_capacity(THREADS * ITERATIONS);
+        while let Ok(vec) = rx.recv() {
+            bufs.extend(vec);
+        }
+
+        for (index, buf) in bufs.iter().enumerate() {
+            for (index2, buf2) in bufs.iter().enumerate() {
+                if index == index2 {
+                    continue;
+                }
+
+                let ptr = buf.as_ptr();
+                let ptr2 = buf2.as_ptr();
+
+                if ptr == ptr2 {
+                    panic!("[{}] [{}] duplicate pointer: {:p}", index, index2, ptr);
+                }
+            }
         }
     }
 }
