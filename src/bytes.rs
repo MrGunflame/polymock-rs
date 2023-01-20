@@ -65,3 +65,6 @@ impl Debug for Bytes {
             .finish()
     }
 }
+
+unsafe impl Send for Bytes {}
+unsafe impl Sync for Bytes {}

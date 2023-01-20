@@ -107,3 +107,6 @@ impl Debug for BytesMut {
             .finish()
     }
 }
+
+unsafe impl Send for BytesMut {}
+unsafe impl Sync for BytesMut {}
