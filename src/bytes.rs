@@ -16,6 +16,7 @@ use crate::arena::ChunkRef;
 /// [`Bytes`]: https://docs.rs/bytes/latest/bytes/struct.Bytes.html
 /// [`bytes`]: https://docs.rs/bytes/latest/bytes/index.html
 /// [`Arena`]: crate::Arena
+#[derive(Clone)]
 pub struct Bytes {
     chunk: ChunkRef,
     ptr: NonNull<u8>,
