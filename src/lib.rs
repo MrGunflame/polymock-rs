@@ -29,16 +29,20 @@
 //! }
 //!
 //! let buf1 = buf.freeze();
-//! let buf2 = buf.freeze();
+//! let buf2 = buf1.clone();
 //!
 //! assert_eq!(buf1, buf2);
 //! ```
 //!
 //! [`bytes`]: https://docs.rs/bytes/latest/bytes/index.html
-
+//!
+#![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+
+#[cfg(any(feature = "std", test))]
+extern crate std;
 
 pub(crate) mod arena;
 pub(crate) mod bytes;
@@ -52,5 +56,20 @@ pub use bytes_mut::BytesMut;
 #[inline(never)]
 #[cold]
 pub(crate) fn abort() -> ! {
-    std::process::abort();
+    #[cfg(feature = "std")]
+    {
+        std::process::abort();
+    }
+
+    #[cfg(not(feature = "std"))]
+    {
+        struct Abort;
+        impl Drop for Abort {
+            fn drop(&mut self) {
+                panic!();
+            }
+        }
+
+        panic!("abort");
+    }
 }

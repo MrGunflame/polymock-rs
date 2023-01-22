@@ -92,19 +92,19 @@ impl PartialEq<[u8]> for Bytes {
 impl Eq for Bytes {}
 
 impl PartialOrd for Bytes {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Bytes {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.as_slice().cmp(other.as_slice())
     }
 }
 
 impl PartialOrd<[u8]> for Bytes {
-    fn partial_cmp(&self, other: &[u8]) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &[u8]) -> Option<core::cmp::Ordering> {
         Some(self.as_slice().cmp(other))
     }
 }
@@ -146,6 +146,8 @@ mod tests {
 
 #[cfg(all(test, loom))]
 mod loom_tests {
+    use std::vec::Vec;
+
     use loom::sync::atomic::Ordering;
     use loom::thread;
 
