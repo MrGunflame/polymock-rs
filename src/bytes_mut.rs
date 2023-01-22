@@ -28,7 +28,7 @@ impl BytesMut {
     /// If `len` is greater than the current buffer, this has no effect.
     #[inline]
     pub fn truncate(&mut self, len: usize) {
-        if self.len < len {
+        if self.len > len {
             unsafe {
                 self.set_len(len);
             }
