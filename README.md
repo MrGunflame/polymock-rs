@@ -19,7 +19,7 @@ polymock = "0.2.0"
 
 Next create an allocation arena and allocate some buffers:
 
-```
+```rustt
 use polymock::Arena;
 
 // Create a bump arena with a chunk size of 1000 bytes.
@@ -39,7 +39,6 @@ for _ in 0..10 {
 drop(arena);
 
 buffers[0][0] = 1;
-
 ```
 
 # License
