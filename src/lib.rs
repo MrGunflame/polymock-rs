@@ -2,7 +2,7 @@
 //!
 //! `polymock` provides a fast allocation [`Arena`] using the bump allocation strategy. It's
 //! primary use case is high-throughput multi-threaded network applications which allocate and free
-//! buffers very frequently and cannot allow going through the global allocator.
+//! buffers very frequently and cannot afford going through the global allocator.
 //!
 //! `polymock` only supports allocating `[u8]` buffers. It will never support allocating of
 //! different objects.
@@ -14,6 +14,15 @@
 //!
 //! Once the construction using a custom vtable will be public, [`Bytes`] will be deprecated in
 //! favor of the [`bytes`] crate.
+//!
+//! # `no_std` support
+//!
+//! `polymock` supports `no_std`, but requires the `alloc` crate. To enable `no_std` support
+//! disable the default "std" feature:
+//!
+//! ```toml
+//! polymock = { version = "0.2.0", default-features = false }
+//! ```
 //!
 //! # Example
 //!

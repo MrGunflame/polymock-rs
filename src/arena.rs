@@ -1,7 +1,7 @@
 use core::alloc::Layout;
+use core::mem;
 use core::ops::Deref;
-use core::ptr;
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::AtomicPtr;
 
 use alloc::boxed::Box;
@@ -11,6 +11,30 @@ use crate::loom::sync::atomic::{AtomicUsize, Ordering};
 
 pub const PAGE: usize = u16::MAX as usize;
 
+/// A bump allocation arena.
+///
+/// # Examples
+///
+/// ```
+/// # use polymock::Arena;
+/// #
+/// let mut arena = Arena::new(1000);
+///
+///
+/// let mut buffers = Vec::new();
+/// for _ in 0..10 {
+///     // All 10 buffers will be allocated in the same chunk.
+///     let mut buf = arena.alloc(100);
+///
+///     buffers.push(buf);
+/// }
+///
+/// // The buffers may outlive the arena they were allocated with.
+/// drop(arena);
+///
+/// buffers[0][0] = 1;
+/// ```
+///
 #[derive(Debug)]
 pub struct Arena {
     chunk_size: usize,
@@ -18,10 +42,21 @@ pub struct Arena {
 }
 
 impl Arena {
+    /// Creates a new `Arena` using the given `chunk_size` for every allocated chunk.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `chunk_size` is bigger than `isize::MAX`.
     pub fn new(chunk_size: usize) -> Self {
+        // We cannot allocated more than isize::MAX so allowing this would only
+        // result in the first chunk allocation to fail.
+        if chunk_size > usize::MAX >> 1 {
+            panic!("cannot create arena with bigger than isize::MAX chunk_size");
+        }
+
         Self {
             chunk_size,
-            head: AtomicPtr::new(core::ptr::null_mut()),
+            head: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
@@ -68,9 +103,20 @@ impl Arena {
 
             let chunk = unsafe { &*next };
 
+            // If the arena has the only reference to the chunk, it may be reused
+            // for future operations.
+            if chunk.ref_count.load(Ordering::SeqCst) == 1 {
+                // SAFETY: The arena has the only reference to the chunk. There are
+                // not references to the memory buffer of the chunk.
+                unsafe {
+                    chunk.reset();
+                }
+            }
+
             if let Some(ptr) = chunk.alloc(size) {
+                // Construct a `ChunkRef` manually from its base pointer.
                 let chunk = unsafe { ChunkRef::from_ptr(next) };
-                unsafe { chunk.increment_reference_count() };
+                chunk.increment_reference_count();
 
                 return (chunk, ptr);
             }
@@ -128,30 +174,52 @@ impl Default for Arena {
     }
 }
 
+/// A reference to a [`ChunkInner`], similar to an [`Arc`].
+///
+/// [`Arc`]: alloc::sync::Arc
 #[derive(Debug, PartialEq, Eq)]
+#[repr(transparent)]
 pub(crate) struct ChunkRef {
     inner: NonNull<ChunkInner>,
 }
 
 impl ChunkRef {
+    /// Copies the `ChunkRef` without incrementing the reference count.
+    ///
+    /// # Safety
+    ///
+    /// This function does not go through the [`Clone`] implementation of `ChunkRef`, but the
+    /// copied value will still be dropped as normal. If both `ChunkRef`s will be dropped normally
+    /// the underlying backing store **will be freed twice, resulting in undefined behavior.**
     #[inline]
     pub unsafe fn copy(&self) -> Self {
+        // SAFETY: `self` is always a valid, initialized and aligned reference.
+        // `ChunkRef` can be safely be copied as `NonNull` is `Copy`.
         unsafe { ptr::read(self as *const Self) }
     }
 
+    /// Manually constructs a `ChunkRef` from its underlying [`ChunkInner`] pointer.
+    ///
+    /// **Note that `from_ptr` does not increment the reference count.**
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must not be null and must point to a valid [`ChunkInner`] instance.
     #[inline]
     pub unsafe fn from_ptr(ptr: *mut ChunkInner) -> Self {
-        unsafe {
-            Self {
-                inner: NonNull::new_unchecked(ptr),
-            }
+        debug_assert!(!ptr.is_null());
+
+        Self {
+            // SAFETY: The caller guarantees that `ptr` is not null.
+            inner: unsafe { NonNull::new_unchecked(ptr) },
         }
     }
 
+    /// Creates a new `ChunkRef` with a new underlying chunk with the given `size`.
     #[inline]
     pub(crate) fn new(size: usize) -> Self {
         let boxed = Box::new(ChunkInner::new(size));
-        let ptr = unsafe { NonNull::new_unchecked(Box::leak(boxed) as *mut ChunkInner) };
+        let ptr = NonNull::from(Box::leak(boxed));
 
         Self { inner: ptr }
     }
@@ -171,6 +239,8 @@ impl Clone for ChunkRef {
     fn clone(&self) -> Self {
         let old_rc = self.ref_count.fetch_add(1, Ordering::Relaxed);
 
+        // Since leaking elements is a safe operation, we must make sure to
+        // NEVER overflow the reference count.
         if old_rc > usize::MAX >> 1 {
             crate::abort();
         }
@@ -188,8 +258,11 @@ impl Drop for ChunkRef {
             return;
         }
 
+        // Fence to prevent reordering of data access after deletion.
+        // Synchronizes with the Release load.
         self.ref_count.load(Ordering::Acquire);
 
+        // SAFETY: We've had the last reference to the underlying value.
         unsafe {
             drop(Box::from_raw(self.inner.as_ptr()));
         }
@@ -210,8 +283,18 @@ pub(crate) struct ChunkInner {
 }
 
 impl ChunkInner {
+    /// Creates a new `ChunkInner` with the given `size`.
     fn new(size: usize) -> Self {
-        let layout = Layout::array::<u8>(size).unwrap();
+        if cfg!(debug_assertions) {
+            Layout::array::<u8>(size).unwrap();
+        }
+
+        let size = mem::size_of::<u8>() * size;
+        let align = mem::align_of::<u8>();
+
+        // SAFETY: The arena chunk size must never exceed `isize::MAX` and the size of
+        // `u8` is 1 so the size cannot overflow.
+        let layout = unsafe { Layout::from_size_align_unchecked(size, align) };
 
         let ptr = unsafe { alloc::alloc::alloc(layout) };
         assert!(!ptr.is_null());
@@ -246,12 +329,21 @@ impl ChunkInner {
         unsafe { Some(NonNull::new_unchecked(self.ptr.add(head))) }
     }
 
+    /// Force the head of the chunk back to the start.
+    ///
+    /// # Safety
+    ///
+    /// This is only safe to call if there are no references to the chunk that access the buffer,
+    /// mutably and immutably. If this condition is violated, buffers may overlap resulting in
+    /// undefined behavior.
     #[inline]
     unsafe fn reset(&self) {
         self.head.store(0, Ordering::Release);
     }
 
-    unsafe fn increment_reference_count(&self) {
+    /// Increments the reference count on the `ChunkInner` by one.
+    #[inline]
+    fn increment_reference_count(&self) {
         self.ref_count.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -259,6 +351,7 @@ impl ChunkInner {
 impl Drop for ChunkInner {
     #[inline]
     fn drop(&mut self) {
+        // SAFETY: The given pointer and layout were previously used to allocate the memory.
         unsafe {
             alloc::alloc::dealloc(self.ptr, self.layout);
         }
@@ -429,10 +522,10 @@ mod tests {
 mod loom_tests {
     use std::vec::Vec;
 
+    use loom::sync::atomic::Ordering;
     use loom::thread;
 
     use super::ChunkRef;
-    use crate::loom::sync::atomic::Ordering;
 
     const THREADS: usize = 2;
     const ITERATIONS: usize = 20;
@@ -440,7 +533,7 @@ mod loom_tests {
     #[test]
     fn test_chunk() {
         loom::model(|| {
-            let mut chunk = ChunkRef::new(1_000_000);
+            let chunk = ChunkRef::new(1_000_000);
 
             let threads: Vec<_> = (0..THREADS)
                 .map(|_| {
@@ -457,7 +550,7 @@ mod loom_tests {
                 th.join().unwrap();
             }
 
-            // assert_eq!(chunk.head.load(Ordering::Relaxed), THREADS * ITERATIONS);
+            assert_eq!(chunk.head.load(Ordering::Relaxed), THREADS * ITERATIONS);
         });
     }
 }

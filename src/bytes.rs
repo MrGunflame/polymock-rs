@@ -160,9 +160,9 @@ mod loom_tests {
     #[test]
     fn test_bytes() {
         loom::model(|| {
-            let mut chunk = ChunkRef::new(1000);
+            let chunk = ChunkRef::new(1000);
             let ptr = chunk.alloc(100).unwrap();
-            let mut bytes = unsafe { Bytes::from_raw_parts(chunk.clone(), ptr, 100) };
+            let bytes = unsafe { Bytes::from_raw_parts(chunk.clone(), ptr, 100) };
 
             let threads: Vec<_> = (0..THREADS)
                 .map(|_| {
