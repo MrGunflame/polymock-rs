@@ -23,20 +23,34 @@ impl Arena {
         }
     }
 
+    /// Allocates a new [`BytesMut`] from the `Arena`.
+    ///
+    /// Note that the returned [`BytesMut`] may contain previously used buffers. If you need to
+    /// create a zeroed [`BytesMut`], consider using [`zeroed`].
+    ///
+    /// [`zeroed`]: Self::zeroed
+    #[inline]
     pub fn alloc(&self, size: usize) -> BytesMut {
         let (chunk, ptr) = self.alloc_raw(size);
 
         unsafe { BytesMut::from_raw_parts(chunk, ptr, size) }
     }
 
+    /// Allocates a new, zeroed [`BytesMut`] from the `Arena`.
+    ///
+    /// Note that `zeroed` zeroes the returned [`BytesMut`]. If that's not necessary you may want
+    /// to use [`alloc`], which does not zero the returned [`BytesMut`].
+    ///
+    /// [`alloc`]: Self::alloc
+    #[inline]
     pub fn zeroed(&self, size: usize) -> BytesMut {
-        let (chunk, ptr) = self.alloc_raw(size);
+        let mut buf = self.alloc(size);
 
         unsafe {
-            std::ptr::write_bytes(ptr.as_ptr(), 0, size);
+            std::ptr::write_bytes(buf.as_mut_ptr(), 0, size);
         }
 
-        unsafe { BytesMut::from_raw_parts(chunk, ptr, size) }
+        buf
     }
 
     fn alloc_raw(&self, size: usize) -> (ChunkRef, NonNull<u8>) {
