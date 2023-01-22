@@ -1,8 +1,10 @@
 use core::alloc::Layout;
 use core::ops::Deref;
+use core::ptr;
 use core::ptr::NonNull;
+use core::sync::atomic::AtomicPtr;
 
-use std::sync::RwLock;
+use alloc::boxed::Box;
 
 use crate::bytes_mut::BytesMut;
 use crate::loom::sync::atomic::{AtomicUsize, Ordering};
@@ -12,14 +14,14 @@ pub const PAGE: usize = u16::MAX as usize;
 #[derive(Debug)]
 pub struct Arena {
     chunk_size: usize,
-    chunks: RwLock<Vec<ChunkRef>>,
+    head: AtomicPtr<ChunkInner>,
 }
 
 impl Arena {
     pub fn new(chunk_size: usize) -> Self {
         Self {
             chunk_size,
-            chunks: RwLock::new(Vec::new()),
+            head: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 
@@ -47,7 +49,7 @@ impl Arena {
         let mut buf = self.alloc(size);
 
         unsafe {
-            std::ptr::write_bytes(buf.as_mut_ptr(), 0, size);
+            ptr::write_bytes(buf.as_mut_ptr(), 0, size);
         }
 
         buf
@@ -58,27 +60,62 @@ impl Arena {
             panic!("cannot allocate larger than chunk size");
         }
 
-        let chunks = self.chunks.read().unwrap();
-        for chunk in &*chunks {
-            // if chunk.ref_count.load(Ordering::Relaxed) == 1 {
-            //     unsafe {
-            //         chunk.reset();
-            //     }
-            // }
+        let mut next = self.head.load(Ordering::SeqCst);
+        loop {
+            if next.is_null() {
+                break;
+            }
+
+            let chunk = unsafe { &*next };
 
             if let Some(ptr) = chunk.alloc(size) {
-                return (chunk.clone(), ptr);
+                let chunk = unsafe { ChunkRef::from_ptr(next) };
+                unsafe { chunk.increment_reference_count() };
+
+                return (chunk, ptr);
             }
+
+            // Next chunk.
+            next = chunk.next.load(Ordering::SeqCst);
         }
 
-        drop(chunks);
-
+        // Allocate and append a new chunk.
         let chunk = ChunkRef::new(self.chunk_size);
         let ch = chunk.clone();
         let ptr = chunk.alloc(size).unwrap();
 
-        let mut chunks = self.chunks.write().unwrap();
-        chunks.push(chunk);
+        // Find the tail chunk, i.e. the last chunk in the linked list.
+        let mut tail = &self.head;
+        loop {
+            let chunk_ptr = chunk.inner.as_ptr();
+
+            let tail_ptr = tail.load(Ordering::SeqCst);
+            if !tail_ptr.is_null() {
+                // Tail is not null.
+                tail = unsafe { &(*tail_ptr).next };
+                continue;
+            }
+
+            // tail_ptr is the tail.
+            // FIXME: Can this effectively be replaced with an compare_exchange_weak?
+            let Err(tail_ptr) = tail
+                .compare_exchange(
+                    ptr::null_mut(),
+                    chunk_ptr,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+            else {
+                break;
+            };
+
+            // Tail is not null.
+            tail = unsafe { &(*tail_ptr).next };
+        }
+
+        // We store the pointer to the chunk manually.
+        // Do not decrement the reference count.
+        core::mem::forget(chunk);
 
         (ch, ptr)
     }
@@ -99,7 +136,16 @@ pub(crate) struct ChunkRef {
 impl ChunkRef {
     #[inline]
     pub unsafe fn copy(&self) -> Self {
-        unsafe { std::ptr::read(self as *const Self) }
+        unsafe { ptr::read(self as *const Self) }
+    }
+
+    #[inline]
+    pub unsafe fn from_ptr(ptr: *mut ChunkInner) -> Self {
+        unsafe {
+            Self {
+                inner: NonNull::new_unchecked(ptr),
+            }
+        }
     }
 
     #[inline]
@@ -159,6 +205,8 @@ pub(crate) struct ChunkInner {
     ptr: *mut u8,
     head: AtomicUsize,
     pub(crate) ref_count: AtomicUsize,
+    /// Pointer to the next chunk.
+    next: AtomicPtr<Self>,
 }
 
 impl ChunkInner {
@@ -173,6 +221,7 @@ impl ChunkInner {
             ptr,
             head: AtomicUsize::new(0),
             ref_count: AtomicUsize::new(1),
+            next: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 
@@ -201,6 +250,10 @@ impl ChunkInner {
     unsafe fn reset(&self) {
         self.head.store(0, Ordering::Release);
     }
+
+    unsafe fn increment_reference_count(&self) {
+        self.ref_count.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 impl Drop for ChunkInner {
@@ -217,6 +270,7 @@ mod tests {
     use std::ptr::NonNull;
     use std::sync::{mpsc, Arc};
     use std::thread;
+    use std::vec::Vec;
 
     use super::ChunkRef;
     use crate::loom::sync::atomic::Ordering;
@@ -373,6 +427,8 @@ mod tests {
 
 #[cfg(all(loom, test))]
 mod loom_tests {
+    use std::vec::Vec;
+
     use loom::thread;
 
     use super::ChunkRef;
