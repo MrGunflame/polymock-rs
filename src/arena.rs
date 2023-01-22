@@ -482,7 +482,7 @@ mod tests {
                     for _ in 0..ITERATIONS {
                         let buf = arena.zeroed(1);
 
-                        bufs.push(buf.into());
+                        bufs.push(buf);
                     }
 
                     tx.send(bufs).unwrap();
