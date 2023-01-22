@@ -49,6 +49,8 @@ pub use arena::Arena;
 pub use bytes::Bytes;
 pub use bytes_mut::BytesMut;
 
-pub(crate) fn abort() {
+#[inline(never)]
+#[cold]
+pub(crate) fn abort() -> ! {
     std::process::abort();
 }
