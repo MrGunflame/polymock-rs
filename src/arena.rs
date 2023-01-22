@@ -91,7 +91,7 @@ impl Default for Arena {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ChunkRef {
     inner: NonNull<ChunkInner>,
 }
@@ -103,7 +103,7 @@ impl ChunkRef {
     }
 
     #[inline]
-    fn new(size: usize) -> Self {
+    pub(crate) fn new(size: usize) -> Self {
         let boxed = Box::new(ChunkInner::new(size));
         let ptr = unsafe { NonNull::new_unchecked(Box::leak(boxed) as *mut ChunkInner) };
 
@@ -158,7 +158,7 @@ pub(crate) struct ChunkInner {
     layout: Layout,
     ptr: *mut u8,
     head: AtomicUsize,
-    ref_count: AtomicUsize,
+    pub(crate) ref_count: AtomicUsize,
 }
 
 impl ChunkInner {
@@ -176,7 +176,7 @@ impl ChunkInner {
         }
     }
 
-    fn alloc(&self, size: usize) -> Option<NonNull<u8>> {
+    pub(crate) fn alloc(&self, size: usize) -> Option<NonNull<u8>> {
         let mut head = self.head.load(Ordering::Acquire);
 
         if head + size > self.layout.size() {

@@ -69,3 +69,122 @@ impl Debug for Bytes {
 
 unsafe impl Send for Bytes {}
 unsafe impl Sync for Bytes {}
+
+impl PartialEq for Bytes {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        // Both buffers are equal when they point to the same memory.
+        if self.ptr == other.ptr && self.len == other.len {
+            true
+        } else {
+            self.as_slice() == other.as_slice()
+        }
+    }
+}
+
+impl PartialEq<[u8]> for Bytes {
+    #[inline]
+    fn eq(&self, other: &[u8]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl Eq for Bytes {}
+
+impl PartialOrd for Bytes {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Bytes {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_slice().cmp(other.as_slice())
+    }
+}
+
+impl PartialOrd<[u8]> for Bytes {
+    fn partial_cmp(&self, other: &[u8]) -> Option<std::cmp::Ordering> {
+        Some(self.as_slice().cmp(other))
+    }
+}
+
+#[cfg(all(not(loom), test))]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::Bytes;
+    use crate::arena::ChunkRef;
+
+    #[test]
+    fn test_bytes() {
+        let chunk = ChunkRef::new(1000);
+        let ptr = chunk.alloc(100).unwrap();
+
+        assert_eq!(chunk.ref_count.load(Ordering::Relaxed), 1);
+
+        let bytes = unsafe { Bytes::from_raw_parts(chunk.clone(), ptr, 100) };
+
+        assert_eq!(bytes.chunk, chunk);
+        assert_eq!(bytes.len, 100);
+
+        assert_eq!(chunk.ref_count.load(Ordering::Relaxed), 2);
+
+        let bytes2 = bytes.clone();
+        assert_eq!(bytes.ptr, bytes2.ptr);
+        assert_eq!(bytes.len, bytes2.len);
+
+        assert_eq!(chunk.ref_count.load(Ordering::Relaxed), 3);
+
+        drop(bytes);
+        assert_eq!(chunk.ref_count.load(Ordering::Relaxed), 2);
+
+        drop(bytes2);
+        assert_eq!(chunk.ref_count.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use loom::sync::atomic::Ordering;
+    use loom::thread;
+
+    use super::Bytes;
+    use crate::arena::ChunkRef;
+
+    const THREADS: usize = 2;
+    const ITERATIONS: usize = 20;
+
+    #[test]
+    fn test_bytes() {
+        loom::model(|| {
+            let mut chunk = ChunkRef::new(1000);
+            let ptr = chunk.alloc(100).unwrap();
+            let mut bytes = unsafe { Bytes::from_raw_parts(chunk.clone(), ptr, 100) };
+
+            let threads: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let bytes = bytes.clone();
+
+                    thread::spawn(move || {
+                        let mut bufs = Vec::with_capacity(ITERATIONS);
+
+                        for _ in 0..ITERATIONS {
+                            bufs.push(bytes.clone());
+                        }
+
+                        for buf in bufs.into_iter() {
+                            drop(buf);
+                        }
+                    })
+                })
+                .collect();
+
+            for th in threads {
+                th.join().unwrap();
+            }
+
+            assert_eq!(chunk.ref_count.load(Ordering::Relaxed), 2);
+        });
+    }
+}
