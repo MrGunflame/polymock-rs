@@ -16,3 +16,7 @@ std = []
 
 [target.'cfg(loom)'.dev-dependencies]
 loom = "0.5"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

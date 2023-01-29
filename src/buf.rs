@@ -11,6 +11,7 @@ macro_rules! get_buf_impl {
 }
 
 #[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use reader::Reader;
 
 /// A readable memory buffer.
@@ -418,6 +419,7 @@ pub trait Buf {
     /// [`Read`]: std::io::Read
     /// [`BufRead`]: std::io::BufRead
     #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     fn reader(self) -> Reader<Self>
     where
         Self: Sized,
