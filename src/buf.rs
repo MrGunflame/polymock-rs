@@ -24,26 +24,42 @@ pub use reader::Reader;
 ///
 /// [`bytes::Buf`]: https://docs.rs/bytes/latest/bytes/trait.Buf.html
 pub trait Buf {
+    /// Advances the cursor of the buffer by `cnt` bytes.
     fn advance(&mut self, cnt: usize);
 
+    /// Returns a slice, starting at the current position and a length of `Buf::remaining()`.
     fn chunk(&self) -> &[u8];
 
+    /// Returns the number of remaining bytes in the buffer.
     fn remaining(&self) -> usize;
 
+    /// Consumes and Returns the first `len` as a [`Bytes`].
     fn copy_to_bytes(&mut self, len: usize) -> Bytes;
 
+    /// Copy bytes from the buffer into `dst`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self.remaining() < dst.len()`.
     #[inline]
     fn copy_to_slice(&mut self, dst: &mut [u8]) {
-        // Panic if self < dst
+        let mut off = 0;
+
         assert!(self.remaining() >= dst.len());
 
-        let len = self.remaining() - dst.len();
+        while off < dst.len() {
+            let cnt;
 
-        unsafe {
-            core::ptr::copy_nonoverlapping(self.chunk().as_ptr(), dst.as_mut_ptr(), len);
+            let src = self.chunk();
+            cnt = core::cmp::min(src.len(), dst.len() - off);
+
+            unsafe {
+                core::ptr::copy_nonoverlapping(src.as_ptr(), dst[off..].as_mut_ptr(), cnt);
+            }
+
+            off += cnt;
+            self.advance(cnt);
         }
-
-        self.advance(len);
     }
 
     /// Takes an `f32` from the buffer in big-endian order.
