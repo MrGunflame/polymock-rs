@@ -19,8 +19,8 @@ use crate::arena::ChunkRef;
 #[derive(Clone)]
 pub struct Bytes {
     chunk: ChunkRef,
-    ptr: NonNull<u8>,
-    len: usize,
+    pub(crate) ptr: NonNull<u8>,
+    pub(crate) len: usize,
 }
 
 impl Bytes {
@@ -29,6 +29,21 @@ impl Bytes {
         if self.len > len {
             self.len = len;
         }
+    }
+
+    /// Forces the length of the `Bytes` to `len`.
+    ///
+    /// Note that the length of `Bytes` is the same as the length of [`BytesMut`].
+    ///
+    /// # Safety
+    ///
+    /// The length must not exceed the original length that the `Bytes` was originally allocated
+    /// with.
+    ///
+    /// [`BytesMut`]: crate::BytesMut
+    #[inline]
+    pub unsafe fn set_len(&mut self, len: usize) {
+        self.len = len;
     }
 
     #[inline]

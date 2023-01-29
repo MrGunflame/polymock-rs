@@ -53,12 +53,15 @@ extern crate alloc;
 #[cfg(any(feature = "std", test))]
 extern crate std;
 
+pub mod buf;
+
 pub(crate) mod arena;
 pub(crate) mod bytes;
 pub(crate) mod bytes_mut;
 pub(crate) mod loom;
 
 pub use arena::Arena;
+pub use buf::Buf;
 pub use bytes::Bytes;
 pub use bytes_mut::BytesMut;
 
