@@ -1,5 +1,3 @@
-use core::ptr::NonNull;
-
 use crate::bytes::Bytes;
 
 macro_rules! get_buf_impl {
@@ -453,7 +451,7 @@ impl Buf for Bytes {
             // SAFETY: cnt <= self.remaining() means that ptr+cnt is still within
             // the buffer.
             unsafe {
-                self.ptr = NonNull::new_unchecked(self.ptr.as_ptr().add(cnt));
+                self.ptr = self.ptr.add(cnt);
             }
         }
     }

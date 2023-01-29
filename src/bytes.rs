@@ -2,8 +2,11 @@ use core::fmt::{self, Debug, Formatter};
 use core::ops::Deref;
 use core::ptr::NonNull;
 use core::slice;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
-use crate::arena::ChunkRef;
+use alloc::vec::Vec;
+
+use crate::arena::{ChunkInner, ChunkRef};
 
 /// A cheaply cloneable view into a slice of memory allocated by an [`Arena`].
 ///
@@ -16,11 +19,11 @@ use crate::arena::ChunkRef;
 /// [`Bytes`]: https://docs.rs/bytes/latest/bytes/struct.Bytes.html
 /// [`bytes`]: https://docs.rs/bytes/latest/bytes/index.html
 /// [`Arena`]: crate::Arena
-#[derive(Clone)]
 pub struct Bytes {
-    chunk: ChunkRef,
-    pub(crate) ptr: NonNull<u8>,
+    pub(crate) ptr: *const u8,
     pub(crate) len: usize,
+    data: AtomicPtr<()>,
+    vtable: &'static Vtable,
 }
 
 impl Bytes {
@@ -48,12 +51,33 @@ impl Bytes {
 
     #[inline]
     pub(crate) unsafe fn from_raw_parts(chunk: ChunkRef, ptr: NonNull<u8>, len: usize) -> Self {
-        Self { chunk, ptr, len }
+        let data = AtomicPtr::new(chunk.leak() as *const _ as *mut ChunkInner as *mut ());
+
+        Bytes {
+            ptr: ptr.as_ptr(),
+            len,
+            data,
+            vtable: &CHUNK_VTABLE,
+        }
     }
 
     #[inline]
     fn as_slice(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+        unsafe { slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl Clone for Bytes {
+    #[inline]
+    fn clone(&self) -> Self {
+        unsafe { (self.vtable.clone)(&self.data, self.ptr, self.len) }
+    }
+}
+
+impl Drop for Bytes {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe { (self.vtable.drop)(&self.data, self.ptr, self.len) };
     }
 }
 
@@ -76,7 +100,6 @@ impl AsRef<[u8]> for Bytes {
 impl Debug for Bytes {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Bytes")
-            .field("chunk", &self.chunk)
             .field("buffer", &self.as_slice())
             .finish()
     }
@@ -124,6 +147,58 @@ impl PartialOrd<[u8]> for Bytes {
     }
 }
 
+pub(crate) struct Vtable {
+    /// fn(data, ptr, len)
+    clone: unsafe fn(&AtomicPtr<()>, *const u8, usize) -> Bytes,
+    /// fn(data, ptr, len)
+    to_vec: unsafe fn(&AtomicPtr<()>, *const u8, usize) -> Vec<u8>,
+    /// fn(data, ptr, len)
+    drop: unsafe fn(&AtomicPtr<()>, *const u8, usize),
+}
+
+static CHUNK_VTABLE: Vtable = Vtable {
+    clone: chunk_clone,
+    to_vec: chunk_to_vec,
+    drop: chunk_drop,
+};
+
+fn chunk_clone(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Bytes {
+    let data_ptr = data.load(Ordering::Relaxed);
+    let chunk = unsafe { &*(data_ptr as *mut ChunkRef) };
+
+    chunk.increment_reference_count();
+
+    Bytes {
+        ptr,
+        len,
+        data: AtomicPtr::new(data_ptr),
+        vtable: &CHUNK_VTABLE,
+    }
+}
+
+fn chunk_to_vec(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Vec<u8> {
+    let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
+    buf.to_vec()
+}
+
+fn chunk_drop(data: &AtomicPtr<()>, ptr: *const u8, len: usize) {
+    let chunk_ref = unsafe { &*(data.load(Ordering::Relaxed) as *mut ChunkRef) };
+
+    let old_rc = chunk_ref.ref_count.fetch_sub(1, Ordering::Release);
+    if old_rc != 1 {
+        return;
+    }
+
+    chunk_ref.ref_count.load(Ordering::Acquire);
+
+    // Take ownership of the chunk.
+    // SAFETY: The chunk was leaked once first created. A call to `chunk_drop` means
+    // that the last reference of this `Bytes` was dropped.
+    let chunk = unsafe { chunk_ref.copy() };
+
+    drop(chunk);
+}
+
 #[cfg(all(not(loom), test))]
 mod tests {
     use std::sync::atomic::Ordering;
@@ -140,7 +215,7 @@ mod tests {
 
         let bytes = unsafe { Bytes::from_raw_parts(chunk.clone(), ptr, 100) };
 
-        assert_eq!(bytes.chunk, chunk);
+        // assert_eq!(bytes.chunk, chunk);
         assert_eq!(bytes.len, 100);
 
         assert_eq!(chunk.ref_count.load(Ordering::Relaxed), 2);

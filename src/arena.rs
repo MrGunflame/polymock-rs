@@ -215,6 +215,10 @@ impl ChunkRef {
         }
     }
 
+    pub fn leak<'a>(self) -> &'a ChunkInner {
+        unsafe { self.inner.as_ref() }
+    }
+
     /// Creates a new `ChunkRef` with a new underlying chunk with the given `size`.
     #[inline]
     pub(crate) fn new(size: usize) -> Self {
@@ -343,8 +347,14 @@ impl ChunkInner {
 
     /// Increments the reference count on the `ChunkInner` by one.
     #[inline]
-    fn increment_reference_count(&self) {
-        self.ref_count.fetch_add(1, Ordering::Relaxed);
+    pub(crate) fn increment_reference_count(&self) {
+        let old_rc = self.ref_count.fetch_add(1, Ordering::Relaxed);
+
+        // Since leaking elements is a safe operation, we must make sure to
+        // NEVER overflow the reference count.
+        if old_rc > usize::MAX >> 1 {
+            crate::abort();
+        }
     }
 }
 
