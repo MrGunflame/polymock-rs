@@ -174,6 +174,26 @@ impl Default for Arena {
     }
 }
 
+impl Drop for Arena {
+    fn drop(&mut self) {
+        let mut next = *self.head.get_mut();
+
+        loop {
+            if next.is_null() {
+                break;
+            }
+
+            let chunk = unsafe { ChunkRef::from_ptr(next) };
+
+            // FIXME: An atomic access is not necessary here as
+            // we have exclusive ownership of chunk.
+            next = chunk.next.load(Ordering::Relaxed);
+
+            drop(chunk);
+        }
+    }
+}
+
 /// A reference to a [`ChunkInner`], similar to an [`Arc`].
 ///
 /// [`Arc`]: alloc::sync::Arc
