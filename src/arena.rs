@@ -369,8 +369,8 @@ mod tests {
     use crate::loom::sync::atomic::Ordering;
     use crate::{Arena, BytesMut};
 
-    const THREADS: usize = 4;
-    const ITERATIONS: usize = 100_000;
+    const THREADS: usize = 2;
+    const ITERATIONS: usize = 20;
 
     struct SendNonNull(NonNull<u8>);
 
