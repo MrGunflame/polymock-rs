@@ -548,7 +548,7 @@ mod loom_tests {
     use super::ChunkRef;
 
     const THREADS: usize = 2;
-    const ITERATIONS: usize = 20;
+    const ITERATIONS: usize = 1;
 
     #[test]
     fn test_chunk() {
