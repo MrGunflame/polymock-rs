@@ -540,12 +540,14 @@ mod tests {
 
 #[cfg(all(loom, test))]
 mod loom_tests {
+    use std::sync::{mpsc, Arc};
     use std::vec::Vec;
 
     use loom::sync::atomic::Ordering;
     use loom::thread;
 
-    use super::ChunkRef;
+    use super::{Arena, ChunkRef};
+    use crate::BytesMut;
 
     const THREADS: usize = 2;
     const ITERATIONS: usize = 1;
@@ -555,22 +557,72 @@ mod loom_tests {
         loom::model(|| {
             let chunk = ChunkRef::new(1_000_000);
 
+            let (tx, rx) = mpsc::channel::<Vec<*mut u8>>();
+
             let threads: Vec<_> = (0..THREADS)
                 .map(|_| {
                     let chunk = chunk.clone();
+                    let tx = tx.clone();
                     thread::spawn(move || {
+                        let mut bufs = Vec::with_capacity(ITERATIONS);
+
                         for _ in 0..ITERATIONS {
-                            chunk.alloc(1).unwrap();
+                            let ptr = chunk.alloc(1).unwrap();
+
+                            bufs.push(ptr.as_ptr());
                         }
+
+                        tx.send(bufs).unwrap();
                     })
                 })
                 .collect();
+
+            drop(tx);
 
             for th in threads {
                 th.join().unwrap();
             }
 
             assert_eq!(chunk.head.load(Ordering::Relaxed), THREADS * ITERATIONS);
+
+            let mut bufs = Vec::with_capacity(THREADS * ITERATIONS);
+            while let Ok(vec) = rx.recv() {
+                bufs.extend(vec);
+            }
+
+            for (index, ptr) in bufs.iter().enumerate() {
+                for (index2, ptr2) in bufs.iter().enumerate() {
+                    if index == index2 {
+                        continue;
+                    }
+
+                    if ptr == ptr2 {
+                        panic!("[{}] [{}] duplicate pointer: {:p}", index, index2, ptr);
+                    }
+                }
+            }
         });
     }
+
+    // #[test]
+    // fn test_arena() {
+    //     loom::model(|| {
+    //         let arena = Arc::new(Arena::new(1_000));
+
+    //         let threads: Vec<_> = (0..THREADS)
+    //             .map(|_| {
+    //                 let arena = arena.clone();
+    //                 thread::spawn(move || {
+    //                     for _ in 0..ITERATIONS {
+    //                         arena.zeroed(500);
+    //                     }
+    //                 })
+    //             })
+    //             .collect();
+
+    //         for th in threads {
+    //             th.join().unwrap();
+    //         }
+    //     });
+    // }
 }
