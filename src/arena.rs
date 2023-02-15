@@ -561,14 +561,13 @@ mod tests {
 
 #[cfg(all(loom, test))]
 mod loom_tests {
-    use std::sync::{mpsc, Arc};
+    use std::sync::mpsc;
     use std::vec::Vec;
 
     use loom::sync::atomic::Ordering;
     use loom::thread;
 
-    use super::{Arena, ChunkRef};
-    use crate::BytesMut;
+    use super::ChunkRef;
 
     const THREADS: usize = 2;
     const ITERATIONS: usize = 1;
