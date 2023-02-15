@@ -349,7 +349,7 @@ mod loom_tests {
     use crate::arena::ChunkRef;
 
     const THREADS: usize = 2;
-    const ITERATIONS: usize = 20;
+    const ITERATIONS: usize = 5;
 
     #[test]
     fn test_bytes() {

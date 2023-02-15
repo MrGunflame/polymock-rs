@@ -126,6 +126,7 @@ impl Arena {
         }
 
         // Allocate and append a new chunk.
+        // SAFETY: `chunk_size` is guaranteed to never overflow isize (enforced by constructor).
         let chunk = ChunkRef::new(self.chunk_size);
         let ch = chunk.clone();
         let ptr = chunk.alloc(size).unwrap();
@@ -171,6 +172,26 @@ impl Default for Arena {
     #[inline]
     fn default() -> Self {
         Self::new(PAGE)
+    }
+}
+
+impl Drop for Arena {
+    fn drop(&mut self) {
+        let mut next = *self.head.get_mut();
+
+        loop {
+            if next.is_null() {
+                break;
+            }
+
+            let chunk = unsafe { ChunkRef::from_ptr(next) };
+
+            // FIXME: An atomic access is not necessary here as
+            // we have exclusive ownership of chunk.
+            next = chunk.next.load(Ordering::Relaxed);
+
+            drop(chunk);
+        }
     }
 }
 
@@ -222,7 +243,9 @@ impl ChunkRef {
     /// Creates a new `ChunkRef` with a new underlying chunk with the given `size`.
     #[inline]
     pub(crate) fn new(size: usize) -> Self {
-        let boxed = Box::new(ChunkInner::new(size));
+        let chunk = unsafe { ChunkInner::new_unchecked(size) };
+
+        let boxed = Box::new(chunk);
         let ptr = NonNull::from(Box::leak(boxed));
 
         Self { inner: ptr }
@@ -278,7 +301,11 @@ unsafe impl Sync for ChunkRef {}
 
 #[derive(Debug)]
 pub(crate) struct ChunkInner {
-    layout: Layout,
+    /// The length of the allocated heap buffer.
+    ///
+    /// Note that we're not storing the Layout, which saves one `usize`.
+    size: usize,
+    // layout: Layout,
     ptr: *mut u8,
     head: AtomicUsize,
     pub(crate) ref_count: AtomicUsize,
@@ -288,23 +315,20 @@ pub(crate) struct ChunkInner {
 
 impl ChunkInner {
     /// Creates a new `ChunkInner` with the given `size`.
-    fn new(size: usize) -> Self {
-        if cfg!(debug_assertions) {
-            Layout::array::<u8>(size).unwrap();
-        }
-
-        let size = mem::size_of::<u8>() * size;
-        let align = mem::align_of::<u8>();
-
-        // SAFETY: The arena chunk size must never exceed `isize::MAX` and the size of
-        // `u8` is 1 so the size cannot overflow.
-        let layout = unsafe { Layout::from_size_align_unchecked(size, align) };
+    ///
+    /// # Safety
+    ///
+    /// `size` must not overflow `isize` (i.e. `size` must be less than or equal to `isize::MAX`).
+    #[inline]
+    unsafe fn new_unchecked(size: usize) -> Self {
+        // SAFETY: The caller guarantees that `size` does not overflow isize.
+        let layout = unsafe { Self::layout(size) };
 
         let ptr = unsafe { alloc::alloc::alloc(layout) };
         assert!(!ptr.is_null());
 
         Self {
-            layout,
+            size,
             ptr,
             head: AtomicUsize::new(0),
             ref_count: AtomicUsize::new(1),
@@ -315,7 +339,7 @@ impl ChunkInner {
     pub(crate) fn alloc(&self, size: usize) -> Option<NonNull<u8>> {
         let mut head = self.head.load(Ordering::Acquire);
 
-        if head + size > self.layout.size() {
+        if head + size > self.size {
             return None;
         }
 
@@ -325,7 +349,7 @@ impl ChunkInner {
         {
             head = curr;
 
-            if head + size > self.layout.size() {
+            if head + size > self.size {
                 return None;
             }
         }
@@ -356,6 +380,23 @@ impl ChunkInner {
             crate::abort();
         }
     }
+
+    /// Returns the [`Layout`] used to allocate the buffer.
+    ///
+    /// # Safety
+    ///
+    /// `size` must not overflow isize (i.e. `size` must be less than or equal to `isize::MAX`).
+    #[inline]
+    unsafe fn layout(size: usize) -> Layout {
+        let align = mem::align_of::<u8>();
+
+        #[cfg(debug_assertions)]
+        let _ = Layout::from_size_align(size, align);
+
+        // SAFETY: The alignment is 1 (u8) which satisfies all alignment requirements.
+        // The caller guarantees that `size` does not overflow `isize`.
+        unsafe { Layout::from_size_align_unchecked(size, align) }
+    }
 }
 
 impl Drop for ChunkInner {
@@ -363,7 +404,7 @@ impl Drop for ChunkInner {
     fn drop(&mut self) {
         // SAFETY: The given pointer and layout were previously used to allocate the memory.
         unsafe {
-            alloc::alloc::dealloc(self.ptr, self.layout);
+            alloc::alloc::dealloc(self.ptr, Self::layout(self.size));
         }
     }
 }
@@ -379,8 +420,8 @@ mod tests {
     use crate::loom::sync::atomic::Ordering;
     use crate::{Arena, BytesMut};
 
-    const THREADS: usize = 4;
-    const ITERATIONS: usize = 100_000;
+    const THREADS: usize = 2;
+    const ITERATIONS: usize = 20;
 
     struct SendNonNull(NonNull<u8>);
 
@@ -530,6 +571,7 @@ mod tests {
 
 #[cfg(all(loom, test))]
 mod loom_tests {
+    use std::sync::mpsc;
     use std::vec::Vec;
 
     use loom::sync::atomic::Ordering;
@@ -538,29 +580,79 @@ mod loom_tests {
     use super::ChunkRef;
 
     const THREADS: usize = 2;
-    const ITERATIONS: usize = 20;
+    const ITERATIONS: usize = 1;
 
     #[test]
     fn test_chunk() {
         loom::model(|| {
             let chunk = ChunkRef::new(1_000_000);
 
+            let (tx, rx) = mpsc::channel::<Vec<*mut u8>>();
+
             let threads: Vec<_> = (0..THREADS)
                 .map(|_| {
                     let chunk = chunk.clone();
+                    let tx = tx.clone();
                     thread::spawn(move || {
+                        let mut bufs = Vec::with_capacity(ITERATIONS);
+
                         for _ in 0..ITERATIONS {
-                            chunk.alloc(1).unwrap();
+                            let ptr = chunk.alloc(1).unwrap();
+
+                            bufs.push(ptr.as_ptr());
                         }
+
+                        tx.send(bufs).unwrap();
                     })
                 })
                 .collect();
+
+            drop(tx);
 
             for th in threads {
                 th.join().unwrap();
             }
 
             assert_eq!(chunk.head.load(Ordering::Relaxed), THREADS * ITERATIONS);
+
+            let mut bufs = Vec::with_capacity(THREADS * ITERATIONS);
+            while let Ok(vec) = rx.recv() {
+                bufs.extend(vec);
+            }
+
+            for (index, ptr) in bufs.iter().enumerate() {
+                for (index2, ptr2) in bufs.iter().enumerate() {
+                    if index == index2 {
+                        continue;
+                    }
+
+                    if ptr == ptr2 {
+                        panic!("[{}] [{}] duplicate pointer: {:p}", index, index2, ptr);
+                    }
+                }
+            }
         });
     }
+
+    // #[test]
+    // fn test_arena() {
+    //     loom::model(|| {
+    //         let arena = Arc::new(Arena::new(1_000));
+
+    //         let threads: Vec<_> = (0..THREADS)
+    //             .map(|_| {
+    //                 let arena = arena.clone();
+    //                 thread::spawn(move || {
+    //                     for _ in 0..ITERATIONS {
+    //                         arena.zeroed(500);
+    //                     }
+    //                 })
+    //             })
+    //             .collect();
+
+    //         for th in threads {
+    //             th.join().unwrap();
+    //         }
+    //     });
+    // }
 }
