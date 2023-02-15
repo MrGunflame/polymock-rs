@@ -2,8 +2,9 @@ use core::fmt::{self, Debug, Formatter};
 use core::ops::Deref;
 use core::ptr::NonNull;
 use core::slice;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::arena::{ChunkInner, ChunkRef};
@@ -27,6 +28,10 @@ pub struct Bytes {
 }
 
 impl Bytes {
+    pub fn copy_from_slice(data: &[u8]) -> Self {
+        data.to_vec().into()
+    }
+
     #[inline]
     pub fn truncate(&mut self, len: usize) {
         if self.len > len {
@@ -78,6 +83,13 @@ impl Drop for Bytes {
     #[inline]
     fn drop(&mut self) {
         unsafe { (self.vtable.drop)(&self.data, self.ptr, self.len) };
+    }
+}
+
+impl From<Bytes> for Vec<u8> {
+    #[inline]
+    fn from(value: Bytes) -> Self {
+        unsafe { (value.vtable.to_vec)(&value.data, value.ptr, value.len) }
     }
 }
 
@@ -156,6 +168,95 @@ pub(crate) struct Vtable {
     drop: unsafe fn(&AtomicPtr<()>, *const u8, usize),
 }
 
+// === impl ARC_SLICE ===
+
+struct ArcSlice {
+    ptr: *mut [u8],
+    ref_count: AtomicUsize,
+}
+
+impl Drop for ArcSlice {
+    fn drop(&mut self) {
+        unsafe {
+            drop(Box::from_raw(self.ptr));
+        }
+    }
+}
+
+static ARC_VTABLE: Vtable = Vtable {
+    clone: arc_clone,
+    to_vec: arc_to_vec,
+    drop: arc_drop,
+};
+
+fn arc_clone(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Bytes {
+    let inner = data.load(Ordering::Relaxed);
+
+    let slice = unsafe { &*(inner as *mut ArcSlice) };
+
+    if slice.ref_count.fetch_add(1, Ordering::Relaxed) > usize::MAX >> 1 {
+        crate::abort();
+    }
+
+    Bytes {
+        ptr,
+        len,
+        data: AtomicPtr::new(inner),
+        vtable: &ARC_VTABLE,
+    }
+}
+
+fn arc_to_vec(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Vec<u8> {
+    // FIXME: The last Bytes can be optimized by taking ownership of the buffer.
+    let vec = unsafe { core::slice::from_raw_parts(ptr, len).to_vec() };
+    arc_drop(data, ptr, len);
+    vec
+}
+
+fn arc_drop(data: &AtomicPtr<()>, _ptr: *const u8, _len: usize) {
+    let inner = data.load(Ordering::Relaxed) as *mut ArcSlice;
+    let slice = unsafe { &*inner };
+
+    let rc = slice.ref_count.fetch_sub(1, Ordering::Release);
+    if rc != 1 {
+        return;
+    }
+
+    slice.ref_count.load(Ordering::Acquire);
+
+    unsafe {
+        drop(Box::from_raw(inner));
+    }
+}
+
+impl From<Box<[u8]>> for Bytes {
+    fn from(value: Box<[u8]>) -> Self {
+        let slice_len = value.len();
+        let slice_ptr = value.as_ptr();
+        let ptr = Box::into_raw(value);
+
+        let data = Box::into_raw(Box::new(ArcSlice {
+            ptr,
+            ref_count: AtomicUsize::new(1),
+        }));
+
+        Bytes {
+            ptr: slice_ptr,
+            len: slice_len,
+            data: AtomicPtr::new(data as *mut ()),
+            vtable: &ARC_VTABLE,
+        }
+    }
+}
+
+impl From<Vec<u8>> for Bytes {
+    fn from(value: Vec<u8>) -> Self {
+        value.into_boxed_slice().into()
+    }
+}
+
+// === impl CHUNK ===
+
 static CHUNK_VTABLE: Vtable = Vtable {
     clone: chunk_clone,
     to_vec: chunk_to_vec,
@@ -177,11 +278,14 @@ fn chunk_clone(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Bytes {
 }
 
 fn chunk_to_vec(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Vec<u8> {
-    let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
-    buf.to_vec()
+    // Note that the whole buffer always needs to be copied. The chunk is still
+    // owned by the arena.
+    let buf = unsafe { core::slice::from_raw_parts(ptr, len).to_vec() };
+    chunk_drop(data, ptr, len);
+    buf
 }
 
-fn chunk_drop(data: &AtomicPtr<()>, ptr: *const u8, len: usize) {
+fn chunk_drop(data: &AtomicPtr<()>, _ptr: *const u8, _len: usize) {
     let chunk_ref = unsafe { &*(data.load(Ordering::Relaxed) as *mut ChunkRef) };
 
     let old_rc = chunk_ref.ref_count.fetch_sub(1, Ordering::Release);

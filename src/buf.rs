@@ -8,6 +8,7 @@ macro_rules! get_buf_impl {
     }};
 }
 
+use alloc::vec::Vec;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use reader::Reader;
@@ -32,7 +33,23 @@ pub trait Buf {
     fn remaining(&self) -> usize;
 
     /// Consumes and Returns the first `len` as a [`Bytes`].
-    fn copy_to_bytes(&mut self, len: usize) -> Bytes;
+    fn copy_to_bytes(&mut self, len: usize) -> Bytes {
+        assert!(len <= self.remaining());
+
+        let mut rem = len;
+        let mut buf = Vec::with_capacity(len);
+        while rem > 0 {
+            let chunk = self.chunk();
+
+            let cnt = core::cmp::min(chunk.len(), rem);
+            buf.extend(&chunk[..cnt]);
+
+            rem -= cnt;
+            self.advance(cnt);
+        }
+
+        buf.into()
+    }
 
     /// Copy bytes from the buffer into `dst`.
     ///
