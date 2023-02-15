@@ -12,6 +12,8 @@ use crate::bytes::Bytes;
 /// Unlike other collections, `BytesMut` cannot grow. The exact wanted size must be known at time
 /// of creation. This allows `BytesMut` to share it's memory region with other buffers without
 /// risking growing over them.
+///
+/// [`Arena`]: crate::Arena
 pub struct BytesMut {
     chunk: ChunkRef,
     ptr: NonNull<u8>,

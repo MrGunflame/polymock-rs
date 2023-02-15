@@ -9,11 +9,11 @@
 //!
 //! # Using `bytes`
 //!
-//! `polymock` provides it's own [`Bytes`] type that is a mostly drop-in replacement for the
-//! equivalent type from the [`bytes`] crate.
+//! `polymock` provides it's own [`Bytes`](crate::Bytes) type that is a mostly drop-in replacement
+//! for the equivalent type from the [`bytes`] crate.
 //!
-//! Once the construction using a custom vtable will be public, [`Bytes`] will be deprecated in
-//! favor of the [`bytes`] crate.
+//! Once the construction using a custom vtable will be public, [`Bytes`](crate::Bytes) will be
+//! deprecated in favor of the [`bytes`] crate.
 //!
 //! # `no_std` support
 //!
