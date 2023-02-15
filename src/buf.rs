@@ -487,6 +487,8 @@ impl Buf for Bytes {
             unsafe {
                 self.ptr = self.ptr.add(cnt);
             }
+
+            self.len -= cnt;
         }
     }
 
