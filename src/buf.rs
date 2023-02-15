@@ -488,6 +488,48 @@ impl Buf for Bytes {
     }
 }
 
+impl<T> Buf for &mut T
+where
+    T: ?Sized + Buf,
+{
+    fn advance(&mut self, cnt: usize) {
+        (**self).advance(cnt)
+    }
+
+    fn remaining(&self) -> usize {
+        (**self).remaining()
+    }
+
+    fn chunk(&self) -> &[u8] {
+        (**self).chunk()
+    }
+
+    fn copy_to_bytes(&mut self, len: usize) -> Bytes {
+        (**self).copy_to_bytes(len)
+    }
+}
+
+impl<T> Buf for alloc::boxed::Box<T>
+where
+    T: ?Sized + Buf,
+{
+    fn advance(&mut self, cnt: usize) {
+        (**self).advance(cnt)
+    }
+
+    fn remaining(&self) -> usize {
+        (**self).remaining()
+    }
+
+    fn chunk(&self) -> &[u8] {
+        (**self).chunk()
+    }
+
+    fn copy_to_bytes(&mut self, len: usize) -> Bytes {
+        (**self).copy_to_bytes(len)
+    }
+}
+
 mod reader {
     use std::io::{self, BufRead, Read};
 
