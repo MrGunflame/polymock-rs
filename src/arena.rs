@@ -236,8 +236,14 @@ impl ChunkRef {
         }
     }
 
-    pub fn leak<'a>(self) -> &'a ChunkInner {
-        unsafe { self.inner.as_ref() }
+    /// Consumes the `ChunkRef`, returning a raw pointer.
+    ///
+    /// `into_raw` does not decrement the reference count.
+    #[inline]
+    pub fn into_raw(self) -> *mut ChunkInner {
+        let ptr = self.inner.as_ptr();
+        mem::forget(self);
+        ptr
     }
 
     /// Creates a new `ChunkRef` with a new underlying chunk with the given `size`.

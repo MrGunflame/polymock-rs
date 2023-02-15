@@ -459,6 +459,23 @@ pub trait Buf {
     }
 }
 
+impl Buf for &[u8] {
+    #[inline]
+    fn remaining(&self) -> usize {
+        self.len()
+    }
+
+    #[inline]
+    fn chunk(&self) -> &[u8] {
+        self
+    }
+
+    #[inline]
+    fn advance(&mut self, cnt: usize) {
+        *self = &self[cnt..];
+    }
+}
+
 impl Buf for Bytes {
     #[inline]
     fn advance(&mut self, cnt: usize) {
@@ -474,7 +491,6 @@ impl Buf for Bytes {
     }
 
     #[inline]
-
     fn chunk(&self) -> &[u8] {
         self.as_ref()
     }
@@ -518,10 +534,6 @@ where
     fn chunk(&self) -> &[u8] {
         (**self).chunk()
     }
-
-    fn copy_to_bytes(&mut self, len: usize) -> Bytes {
-        (**self).copy_to_bytes(len)
-    }
 }
 
 impl<T> Buf for alloc::boxed::Box<T>
@@ -538,10 +550,6 @@ where
 
     fn chunk(&self) -> &[u8] {
         (**self).chunk()
-    }
-
-    fn copy_to_bytes(&mut self, len: usize) -> Bytes {
-        (**self).copy_to_bytes(len)
     }
 }
 

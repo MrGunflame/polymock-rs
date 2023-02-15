@@ -56,7 +56,7 @@ impl Bytes {
 
     #[inline]
     pub(crate) unsafe fn from_raw_parts(chunk: ChunkRef, ptr: NonNull<u8>, len: usize) -> Self {
-        let data = AtomicPtr::new(chunk.leak() as *const _ as *mut ChunkInner as *mut ());
+        let data = AtomicPtr::new(chunk.into_raw() as *mut ());
 
         Bytes {
             ptr: ptr.as_ptr(),
@@ -265,7 +265,7 @@ static CHUNK_VTABLE: Vtable = Vtable {
 
 fn chunk_clone(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Bytes {
     let data_ptr = data.load(Ordering::Relaxed);
-    let chunk = unsafe { &*(data_ptr as *mut ChunkRef) };
+    let chunk = unsafe { &*(data_ptr as *mut ChunkInner) };
 
     chunk.increment_reference_count();
 
@@ -286,7 +286,8 @@ fn chunk_to_vec(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Vec<u8> {
 }
 
 fn chunk_drop(data: &AtomicPtr<()>, _ptr: *const u8, _len: usize) {
-    let chunk_ref = unsafe { &*(data.load(Ordering::Relaxed) as *mut ChunkRef) };
+    let chunk = data.load(Ordering::Relaxed) as *mut ChunkInner;
+    let chunk_ref = unsafe { &*chunk };
 
     let old_rc = chunk_ref.ref_count.fetch_sub(1, Ordering::Release);
     if old_rc != 1 {
@@ -298,9 +299,9 @@ fn chunk_drop(data: &AtomicPtr<()>, _ptr: *const u8, _len: usize) {
     // Take ownership of the chunk.
     // SAFETY: The chunk was leaked once first created. A call to `chunk_drop` means
     // that the last reference of this `Bytes` was dropped.
-    let chunk = unsafe { chunk_ref.copy() };
-
-    drop(chunk);
+    unsafe {
+        drop(ChunkRef::from_ptr(chunk));
+    }
 }
 
 #[cfg(all(not(loom), test))]
