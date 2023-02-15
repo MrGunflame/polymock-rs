@@ -31,3 +31,12 @@ fn arena_alloc_1000(b: &mut Bencher) {
         arena.alloc(1000);
     });
 }
+
+#[bench]
+fn arena_alloc_1500(b: &mut Bencher) {
+    let arena = Arena::default();
+
+    b.iter(|| {
+        arena.alloc(1500);
+    });
+}
