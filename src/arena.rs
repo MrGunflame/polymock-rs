@@ -92,7 +92,7 @@ impl Arena {
 
     fn alloc_raw(&self, size: usize) -> (ChunkRef, NonNull<u8>) {
         if size > self.chunk_size {
-            panic!("cannot allocate larger than chunk size");
+            panic_too_large();
         }
 
         let mut next = self.head.load(Ordering::SeqCst);
@@ -166,6 +166,12 @@ impl Arena {
 
         (ch, ptr)
     }
+}
+
+#[inline(never)]
+#[cold]
+fn panic_too_large() -> ! {
+    panic!("cannot allocate larger than chunk size");
 }
 
 impl Default for Arena {
