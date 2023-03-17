@@ -7,7 +7,7 @@ use core::sync::atomic::AtomicPtr;
 use alloc::boxed::Box;
 
 use crate::bytes_mut::BytesMut;
-use crate::loom::sync::atomic::{AtomicUsize, Ordering};
+use crate::loom::sync::atomic::{AtomicExt, AtomicUsize, Ordering};
 
 pub const PAGE: usize = u16::MAX as usize;
 
@@ -384,8 +384,8 @@ impl ChunkInner {
     /// size must fit into the chunk.
     #[inline]
     pub(crate) unsafe fn alloc_mut_unchecked(&mut self, size: usize) -> NonNull<u8> {
-        let head = *self.head.get_mut();
-        *self.head.get_mut() += size;
+        let head = self.head.get();
+        self.head.set(head + size);
 
         unsafe { NonNull::new_unchecked(self.ptr.add(head)) }
     }
