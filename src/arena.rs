@@ -345,7 +345,9 @@ impl ChunkInner {
         let layout = unsafe { Self::layout(size) };
 
         let ptr = unsafe { alloc::alloc::alloc(layout) };
-        assert!(!ptr.is_null());
+        if ptr.is_null() {
+            alloc::alloc::handle_alloc_error(layout);
+        }
 
         Self {
             size,
