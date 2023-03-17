@@ -127,9 +127,12 @@ impl Arena {
 
         // Allocate and append a new chunk.
         // SAFETY: `chunk_size` is guaranteed to never overflow isize (enforced by constructor).
-        let chunk = ChunkRef::new(self.chunk_size);
+        let mut chunk = ChunkRef::new(self.chunk_size);
         let ch = chunk.clone();
-        let ptr = chunk.alloc(size).unwrap();
+
+        // SAFETY: We still have exclusive access to the chunk and previously
+        // asserted that size <= chunk_size.
+        let ptr = unsafe { chunk.as_mut().alloc_mut_unchecked(size) };
 
         // Find the tail chunk, i.e. the last chunk in the linked list.
         let mut tail = &self.head;
@@ -262,6 +265,11 @@ impl ChunkRef {
 
         Self { inner: ptr }
     }
+
+    #[inline]
+    pub(crate) unsafe fn as_mut(&mut self) -> &mut ChunkInner {
+        unsafe { self.inner.as_mut() }
+    }
 }
 
 impl Deref for ChunkRef {
@@ -367,6 +375,17 @@ impl ChunkInner {
         }
 
         unsafe { Some(NonNull::new_unchecked(self.ptr.add(head))) }
+    }
+
+    /// # Safety
+    ///
+    /// size must fit into the chunk.
+    #[inline]
+    pub(crate) unsafe fn alloc_mut_unchecked(&mut self, size: usize) -> NonNull<u8> {
+        let head = *self.head.get_mut();
+        *self.head.get_mut() += size;
+
+        unsafe { NonNull::new_unchecked(self.ptr.add(head)) }
     }
 
     /// Force the head of the chunk back to the start.
